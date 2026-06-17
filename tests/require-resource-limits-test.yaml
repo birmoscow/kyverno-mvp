@@ -2,36 +2,15 @@ name: require-resource-limits
 policies:
   - ../policies/require-resource-limits.yaml
 resources:
-  - name: good-pod
-    resource:
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: good-pod
-      spec:
-        containers:
-          - name: nginx
-            image: nginx:1.21
-            resources:
-              limits:
-                cpu: "100m"
-                memory: "128Mi"
-  - name: bad-pod
-    resource:
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: bad-pod
-      spec:
-        containers:
-          - name: nginx
-            image: nginx:1.21
+  - require-resource-limits-resources.yaml
 results:
   - policy: require-resource-limits
     rule: limits-required
     resource: good-pod
-    status: pass
+    kind: Pod
+    result: pass
   - policy: require-resource-limits
     rule: limits-required
     resource: bad-pod
-    status: fail
+    kind: Pod
+    result: fail

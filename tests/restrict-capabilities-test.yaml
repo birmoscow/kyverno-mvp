@@ -2,44 +2,15 @@ name: restrict-capabilities
 policies:
   - ../policies/restrict-capabilities.yaml
 resources:
-  - name: good-pod
-    resource:
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: good-pod
-      spec:
-        containers:
-          - name: nginx
-            image: nginx:1.21
-            securityContext:
-              capabilities:
-                drop:
-                  - ALL
-                add:
-                  - NET_BIND_SERVICE
-  - name: bad-pod
-    resource:
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: bad-pod
-      spec:
-        containers:
-          - name: nginx
-            image: nginx:1.21
-            securityContext:
-              capabilities:
-                drop:
-                  - ALL
-                add:
-                  - SYS_ADMIN
+  - restrict-capabilities-resources.yaml
 results:
   - policy: restrict-capabilities
     rule: drop-all-capabilities
     resource: good-pod
-    status: pass
+    kind: Pod
+    result: pass
   - policy: restrict-capabilities
     rule: drop-all-capabilities
     resource: bad-pod
-    status: fail
+    kind: Pod
+    result: fail

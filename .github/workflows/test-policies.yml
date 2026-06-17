@@ -4,9 +4,11 @@ on:
   push:
     paths:
       - 'policies/**'
+      - 'tests/**'
   pull_request:
     paths:
       - 'policies/**'
+      - 'tests/**'
 
 jobs:
   test:
@@ -21,5 +23,9 @@ jobs:
           tar -xzf kyverno-cli_v1.14.0_linux_x86_64.tar.gz
           sudo mv kyverno /usr/local/bin/
 
-      - name: Run kyverno test
-        run: kyverno test policies/ --detailed-results
+      - name: Run kyverno tests
+        run: |
+          cd tests
+          for f in *-test.yaml; do
+            kyverno test . -f "$f" --detailed-results || exit 1
+          done

@@ -2,34 +2,15 @@ name: require-labels
 policies:
   - ../policies/require-labels.yaml
 resources:
-  - name: good-pod
-    resource:
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: good-pod
-        labels:
-          app: myapp
-      spec:
-        containers:
-          - name: nginx
-            image: nginx:1.21
-  - name: bad-pod
-    resource:
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: bad-pod
-      spec:
-        containers:
-          - name: nginx
-            image: nginx:1.21
+  - require-labels-resources.yaml
 results:
   - policy: require-labels
     rule: check-labels
     resource: good-pod
-    status: pass
+    kind: Pod
+    result: pass
   - policy: require-labels
     rule: check-labels
     resource: bad-pod
-    status: fail
+    kind: Pod
+    result: fail
