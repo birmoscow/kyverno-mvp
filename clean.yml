@@ -1,0 +1,80 @@
+---
+- name: Clean up Kyverno MVP stand
+  hosts: vm
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Delete KinD cluster (if exists)
+      ansible.builtin.shell: |
+        kind delete cluster --name kyverno-mvp
+      environment:
+        PATH: "/usr/local/go/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      ignore_errors: true
+      changed_when: true
+
+    - name: Remove Helm releases (ignore errors if not exist)
+      ansible.builtin.shell: |
+        helm uninstall -n argocd argocd 2>/dev/null || true
+        helm uninstall -n kyverno kyverno 2>/dev/null || true
+        helm uninstall -n monitoring prometheus 2>/dev/null || true
+        helm uninstall -n policy-reporter policy-reporter 2>/dev/null || true
+        helm uninstall -n ingress-nginx ingress-nginx 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete Kubernetes namespaces (if any left)
+      ansible.builtin.shell: |
+        kubectl delete namespace argocd kyverno monitoring policy-reporter ingress-nginx --ignore-not-found=true 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Remove temporary files created by Ansible
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/kind-config.yaml
+        - /tmp/argocd-app-of-apps.yaml
+        - /tmp/kyverno-dashboard-configmap.yaml
+        - /tmp/argocd-install.yaml
+        - /tmp/kyverno-cli.tar.gz
+        - /tmp/kyverno
+        - /tmp/kyverno-mvp-repo
+        - /tmp/kyverno-policies
+      ignore_errors: true
+
+    - name: Remove kubeconfig for root
+      ansible.builtin.file:
+        path: /root/.kube/config
+        state: absent
+      ignore_errors: true
+
+    - name: Remove kubeconfig for ansible_user
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/.kube/config"
+        state: absent
+      ignore_errors: true
+
+    - name: Remove any leftover policy files in home directory
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/policies"
+        state: absent
+      ignore_errors: true
+
+    - name: Remove cloned repository (if any)
+      ansible.builtin.file:
+        path: "/home/{{ ansible_user }}/kyverno-mvp"
+        state: absent
+      ignore_errors: true
+
+    - name: Display completion message
+      ansible.builtin.debug:
+        msg: |
+          ============================================================
+          ✅ Cleanup completed.
+          All Kubernetes resources, Helm releases, and temporary files
+          have been removed.
+          You can now run the fresh deployment with:
+            ansible-playbook -i ansible/inventory.ini ansible/site.yml
+          ============================================================

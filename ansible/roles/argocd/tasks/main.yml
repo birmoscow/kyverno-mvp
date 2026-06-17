@@ -1,35 +1,35 @@
 ---
 - name: Create argocd namespace
-  shell: |
+  ansible.builtin.shell: |
     kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Download ArgoCD install manifest
-  get_url:
+- name: Download ArgoCD install manifest (latest stable)
+  ansible.builtin.get_url:
     url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
     dest: /tmp/argocd-install.yaml
     mode: '0644'
   register: manifest_download
-  timeout: 60
+  timeout: 120
   ignore_errors: true
 
-- name: Remove ApplicationSet CRD from manifest
-  shell: |
+- name: Remove ApplicationSet CRD (to avoid annotation size limit)
+  ansible.builtin.shell: |
     sed -i '/kind: CustomResourceDefinition/,/^---$/ { /name: applicationsets.argoproj.io/,/^---$/d }' /tmp/argocd-install.yaml
   when: manifest_download.changed or not manifest_download.changed
 
 - name: Apply modified ArgoCD manifest
-  shell: |
+  ansible.builtin.shell: |
     kubectl apply -n argocd -f /tmp/argocd-install.yaml
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   ignore_errors: true
 
-- name: Wait for ArgoCD server
-  shell: |
+- name: Wait for ArgoCD server to be ready
+  ansible.builtin.shell: |
     kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
   environment:
     KUBECONFIG: /root/.kube/config
@@ -37,7 +37,7 @@
   ignore_errors: true
 
 - name: Set ArgoCD admin password
-  shell: |
+  ansible.builtin.shell: |
     BCRYPT_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'{{ argocd_admin_password }}', bcrypt.gensalt(rounds=10)).decode())")
     kubectl -n argocd patch secret argocd-secret -p "{\"stringData\": {\"admin.password\": \"$BCRYPT_HASH\", \"admin.passwordMtime\": \"$(date +%FT%T%Z)\"}}"
   environment:
@@ -46,38 +46,88 @@
   ignore_errors: true
 
 - name: Install python3-bcrypt
-  apt:
+  ansible.builtin.apt:
     name: python3-bcrypt
     state: present
 
-# ---- НОВЫЙ БЛОК: патчим ArgoCD на insecure ----
-- name: Set ArgoCD server insecure mode (to avoid redirects)
-  shell: |
-    kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{"data":{"server.insecure":"true"}}' || true
+- name: Add Redis to ArgoCD (since we install via kubectl, Redis not included by default)
+  ansible.builtin.shell: |
+    kubectl apply -n argocd -f - <<EOF
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: argocd-redis
+      labels:
+        app.kubernetes.io/component: redis
+        app.kubernetes.io/name: argocd-redis
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-redis
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: argocd-redis
+        spec:
+          containers:
+          - name: redis
+            image: redis:7.0.11-alpine
+            ports:
+            - containerPort: 6379
+            resources:
+              requests:
+                cpu: 50m
+                memory: 64Mi
+              limits:
+                cpu: 100m
+                memory: 128Mi
+    ---
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: argocd-redis
+      labels:
+        app.kubernetes.io/component: redis
+        app.kubernetes.io/name: argocd-redis
+    spec:
+      ports:
+      - port: 6379
+        targetPort: 6379
+      selector:
+        app.kubernetes.io/name: argocd-redis
+    EOF
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   ignore_errors: true
 
-- name: Restart ArgoCD server to apply insecure mode
-  shell: |
+- name: Wait for Redis to be ready
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=available deployment/argocd-redis -n argocd --timeout=120s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+  ignore_errors: true
+
+- name: Configure ArgoCD to use Redis and set insecure mode
+  ansible.builtin.shell: |
+    kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{"data":{"server.insecure":"true","redis.server":"argocd-redis:6379"}}' || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Restart ArgoCD server to apply new config
+  ansible.builtin.shell: |
     kubectl rollout restart deployment/argocd-server -n argocd
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   ignore_errors: true
 
-- name: Wait for ArgoCD server restart
-  shell: |
-    kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=180s
-  environment:
-    KUBECONFIG: /root/.kube/config
-  changed_when: false
-  ignore_errors: true
-
-# ---- Создаём Ingress ----
 - name: Create Ingress for ArgoCD with correct annotations
-  shell: |
+  ansible.builtin.shell: |
     kubectl apply -f - <<EOF
     apiVersion: networking.k8s.io/v1
     kind: Ingress
@@ -106,40 +156,52 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Wait for ArgoCD Ingress
-  shell: |
+- name: Wait for ArgoCD Ingress to be ready
+  ansible.builtin.shell: |
     kubectl wait --for=condition=ready ingress/argocd-server -n argocd --timeout=60s
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: false
   ignore_errors: true
 
-# ---- GitOps (опционально) ----
-- name: Add git repo (if URL set)
-  shell: |
-    argocd login argocd.{{ domain_suffix }} --username admin --password "{{ argocd_admin_password }}" --insecure 2>/dev/null || true
-    argocd repo add {{ git_repo_url }} --insecure-skip-server-verification 2>/dev/null || true
+- name: Wait for ArgoCD server after restart
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+  ignore_errors: true
+
+# ---- Действия, зависящие от git_repo_url ----
+- name: Add git repository to ArgoCD (если URL указан)
+  ansible.builtin.shell: |
+    argocd login argocd.{{ domain_suffix }} \
+      --username admin \
+      --password "{{ argocd_admin_password }}" \
+      --insecure 2>/dev/null || true
+    argocd repo add {{ git_repo_url }} \
+      --insecure-skip-server-verification 2>/dev/null || true
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   when: git_repo_url != ""
 
-- name: Deploy app-of-apps template (if URL set)
-  template:
+- name: Deploy app-of-apps template (если URL указан)
+  ansible.builtin.template:
     src: argocd-app-of-apps.yaml.j2
     dest: /tmp/argocd-app-of-apps.yaml
     mode: '0644'
   when: git_repo_url != ""
 
-- name: Apply app-of-apps (if URL set)
-  shell: |
+- name: Apply app-of-apps (если URL указан)
+  ansible.builtin.shell: |
     kubectl apply -f /tmp/argocd-app-of-apps.yaml
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   when: git_repo_url != ""
 
-- name: Warning if git_repo_url not set
-  debug:
-    msg: "⚠️ git_repo_url not set. ArgoCD installed but App-of-Apps not deployed. Apply policies manually: kubectl apply -f policies/"
+- name: Предупреждение, если git_repo_url не задан
+  ansible.builtin.debug:
+    msg: "⚠️ git_repo_url не задан. ArgoCD установлен, но App-of-Apps не развёрнут. Политики нужно будет применить вручную (kubectl apply -f policies/)."
   when: git_repo_url == ""
