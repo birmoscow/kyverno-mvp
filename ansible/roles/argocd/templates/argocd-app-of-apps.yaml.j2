@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: kyverno-mvp
+  namespace: argocd
+spec:
+  description: Kyverno MVP Project
+  sourceRepos:
+    - "{{ git_repo_url }}"
+    - "https://kyverno.github.io/policy-reporter"
+  destinations:
+    - namespace: "*"
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kyverno-policies
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: kyverno-mvp
+  source:
+    repoURL: "{{ git_repo_url }}"
+    targetRevision: "{{ git_repo_branch }}"
+    path: policies
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: kyverno
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

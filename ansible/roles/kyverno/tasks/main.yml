@@ -1,0 +1,124 @@
+---
+- name: Add Kyverno Helm repository
+  ansible.builtin.shell: helm repo add kyverno https://kyverno.github.io/kyverno/
+  changed_when: false
+
+- name: Update Helm repos
+  ansible.builtin.shell: helm repo update
+  changed_when: false
+
+- name: Check if Kyverno release exists and is pending/failed
+  ansible.builtin.shell: |
+    helm list -n kyverno --failed --pending -o json | jq -r '.[] | select(.name=="kyverno") | .name'
+  register: kyverno_release_status
+  changed_when: false
+  ignore_errors: true
+  environment:
+    KUBECONFIG: /root/.kube/config
+
+- name: Uninstall pending/failed Kyverno release
+  ansible.builtin.shell: |
+    helm uninstall kyverno -n kyverno
+  environment:
+    KUBECONFIG: /root/.kube/config
+  when: kyverno_release_status.stdout == "kyverno"
+  changed_when: true
+
+- name: Delete kyverno namespace (if exists)
+  ansible.builtin.shell: |
+    kubectl delete namespace kyverno --ignore-not-found=true
+    sleep 5
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Install Kyverno (minimal - only admission controller)
+  ansible.builtin.shell: |
+    helm upgrade --install kyverno kyverno/kyverno \
+      --namespace kyverno \
+      --create-namespace \
+      --version {{ kyverno_chart_version }} \
+      --set admissionController.replicas=1 \
+      --set admissionController.resources.requests.cpu=50m \
+      --set admissionController.resources.requests.memory=64Mi \
+      --set admissionController.resources.limits.cpu=500m \
+      --set admissionController.resources.limits.memory=512Mi \
+      --set backgroundController.enabled=false \
+      --set cleanupController.enabled=false \
+      --set reportsController.enabled=false \
+      --set features.policyExceptions.enabled=false \
+      --wait --timeout 30m
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Wait for Kyverno admission controller to be ready
+  ansible.builtin.shell: |
+    kubectl wait --for=condition=available deployment/kyverno-admission-controller -n kyverno --timeout=300s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+
+# Политики: копируем из локальной папки, если git_repo_url не задан
+- name: Ensure policies directory exists
+  ansible.builtin.file:
+    path: /tmp/kyverno-policies
+    state: directory
+    mode: '0755'
+
+- name: Copy policies from local repo (if git_repo_url not set)
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../../policies/"
+    dest: /tmp/kyverno-policies/
+    mode: '0644'
+  when: (git_repo_url is undefined or git_repo_url == "")
+  ignore_errors: true
+
+- name: Clone repository with policies (if git_repo_url is set)
+  ansible.builtin.git:
+    repo: "{{ git_repo_url }}"
+    dest: /tmp/kyverno-mvp-repo
+    version: "{{ git_repo_branch }}"
+    force: true
+  when: git_repo_url is defined and git_repo_url != ""
+  ignore_errors: true
+
+- name: Determine test directory
+  ansible.builtin.set_fact:
+    test_dir: "{% if git_repo_url is defined and git_repo_url != '' %}/tmp/kyverno-mvp-repo/policies{% else %}/tmp/kyverno-policies{% endif %}"
+
+- name: Check if kyverno CLI is installed
+  ansible.builtin.command: which kyverno
+  register: kyverno_cli_check
+  changed_when: false
+  ignore_errors: true
+
+- name: Run Kyverno policy tests (if CLI available)
+  ansible.builtin.shell: |
+    cd {{ test_dir }}
+    kyverno test . --detailed-results
+  environment:
+    KUBECONFIG: /root/.kube/config
+  register: kyverno_test_result
+  changed_when: false
+  ignore_errors: true
+  when: 
+    - kyverno_cli_check.rc == 0
+    - test_dir is defined
+
+- name: Show test results (if any)
+  ansible.builtin.debug:
+    var: kyverno_test_result.stdout
+  when: kyverno_test_result is defined and kyverno_test_result.stdout is defined
+
+- name: Fail if tests failed
+  ansible.builtin.fail:
+    msg: "Kyverno policy tests FAILED! Fix policies before deploying.\n{{ kyverno_test_result.stdout }}"
+  when: 
+    - kyverno_test_result is defined
+    - kyverno_test_result.rc != 0
+
+- name: Warn if tests were skipped
+  ansible.builtin.debug:
+    msg: "ℹ️ Kyverno CLI not found – skipping automated tests. You can test policies manually (e.g., 'kubectl apply -f policies/')"
+  when: kyverno_cli_check.rc != 0

@@ -1,0 +1,24 @@
+---
+- name: Get latest stable kubectl version
+  ansible.builtin.uri:
+    url: https://dl.k8s.io/release/stable.txt
+    return_content: true
+  register: kubectl_stable_version
+
+- name: Set kubectl version fact
+  ansible.builtin.set_fact:
+    kubectl_version: "{{ kubectl_stable_version.content | trim }}"
+
+- name: Download kubectl binary
+  ansible.builtin.get_url:
+    url: "https://dl.k8s.io/release/{{ kubectl_version }}/bin/linux/amd64/kubectl"
+    dest: /tmp/kubectl
+    mode: '0755'
+    force: true
+
+- name: Install kubectl
+  ansible.builtin.copy:
+    src: /tmp/kubectl
+    dest: /usr/local/bin/kubectl
+    mode: '0755'
+    remote_src: true

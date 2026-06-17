@@ -1,0 +1,15 @@
+---
+- name: Deploy Kyverno MVP stand
+  hosts: vm
+  become: true
+  gather_facts: true
+
+  roles:
+    - prereqs
+    - docker
+    - kubectl
+    - kind
+    - ingress
+    - argocd
+    - kyverno
+    - monitoring

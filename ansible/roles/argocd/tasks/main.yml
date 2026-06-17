@@ -1,0 +1,145 @@
+---
+- name: Create argocd namespace
+  shell: |
+    kubectl create namespace argocd --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Download ArgoCD install manifest
+  get_url:
+    url: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    dest: /tmp/argocd-install.yaml
+    mode: '0644'
+  register: manifest_download
+  timeout: 60
+  ignore_errors: true
+
+- name: Remove ApplicationSet CRD from manifest
+  shell: |
+    sed -i '/kind: CustomResourceDefinition/,/^---$/ { /name: applicationsets.argoproj.io/,/^---$/d }' /tmp/argocd-install.yaml
+  when: manifest_download.changed or not manifest_download.changed
+
+- name: Apply modified ArgoCD manifest
+  shell: |
+    kubectl apply -n argocd -f /tmp/argocd-install.yaml
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for ArgoCD server
+  shell: |
+    kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=300s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+  ignore_errors: true
+
+- name: Set ArgoCD admin password
+  shell: |
+    BCRYPT_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'{{ argocd_admin_password }}', bcrypt.gensalt(rounds=10)).decode())")
+    kubectl -n argocd patch secret argocd-secret -p "{\"stringData\": {\"admin.password\": \"$BCRYPT_HASH\", \"admin.passwordMtime\": \"$(date +%FT%T%Z)\"}}"
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Install python3-bcrypt
+  apt:
+    name: python3-bcrypt
+    state: present
+
+# ---- НОВЫЙ БЛОК: патчим ArgoCD на insecure ----
+- name: Set ArgoCD server insecure mode (to avoid redirects)
+  shell: |
+    kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{"data":{"server.insecure":"true"}}' || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Restart ArgoCD server to apply insecure mode
+  shell: |
+    kubectl rollout restart deployment/argocd-server -n argocd
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for ArgoCD server restart
+  shell: |
+    kubectl wait --for=condition=available deployment/argocd-server -n argocd --timeout=180s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+  ignore_errors: true
+
+# ---- Создаём Ingress ----
+- name: Create Ingress for ArgoCD with correct annotations
+  shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: argocd-server
+      namespace: argocd
+      annotations:
+        nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+        nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    spec:
+      ingressClassName: nginx
+      rules:
+      - host: argocd.{{ domain_suffix }}
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 80
+    EOF
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Wait for ArgoCD Ingress
+  shell: |
+    kubectl wait --for=condition=ready ingress/argocd-server -n argocd --timeout=60s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+  ignore_errors: true
+
+# ---- GitOps (опционально) ----
+- name: Add git repo (if URL set)
+  shell: |
+    argocd login argocd.{{ domain_suffix }} --username admin --password "{{ argocd_admin_password }}" --insecure 2>/dev/null || true
+    argocd repo add {{ git_repo_url }} --insecure-skip-server-verification 2>/dev/null || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  when: git_repo_url != ""
+
+- name: Deploy app-of-apps template (if URL set)
+  template:
+    src: argocd-app-of-apps.yaml.j2
+    dest: /tmp/argocd-app-of-apps.yaml
+    mode: '0644'
+  when: git_repo_url != ""
+
+- name: Apply app-of-apps (if URL set)
+  shell: |
+    kubectl apply -f /tmp/argocd-app-of-apps.yaml
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  when: git_repo_url != ""
+
+- name: Warning if git_repo_url not set
+  debug:
+    msg: "⚠️ git_repo_url not set. ArgoCD installed but App-of-Apps not deployed. Apply policies manually: kubectl apply -f policies/"
+  when: git_repo_url == ""

@@ -1,0 +1,14 @@
+---
+- name: Apply ingress-nginx manifest for KinD
+  ansible.builtin.shell: |
+    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-{{ ingress_nginx_version }}/deploy/static/provider/kind/deploy.yaml
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Wait for ingress-nginx ready
+  ansible.builtin.shell: |
+    kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=180s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false

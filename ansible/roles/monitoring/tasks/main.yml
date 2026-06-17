@@ -1,0 +1,127 @@
+---
+- name: Add Prometheus community Helm repo
+  ansible.builtin.shell: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+  changed_when: false
+
+- name: Add Policy Reporter Helm repo
+  ansible.builtin.shell: helm repo add policy-reporter https://kyverno.github.io/policy-reporter
+  changed_when: false
+
+- name: Update Helm repos
+  ansible.builtin.shell: helm repo update
+  changed_when: false
+
+- name: Install kube-prometheus-stack
+  ansible.builtin.shell: |
+    helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
+      --namespace monitoring --create-namespace \
+      --version {{ kube_prometheus_stack_version }} \
+      --set grafana.adminPassword={{ grafana_admin_password }} \
+      --set grafana.service.type=ClusterIP \
+      --set grafana.service.port=80 \
+      --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+      --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+      --set alertmanager.enabled=false \
+      --set prometheus.resources.requests.cpu=100m \
+      --set prometheus.resources.requests.memory=128Mi \
+      --set prometheus.resources.limits.cpu=200m \
+      --set prometheus.resources.limits.memory=256Mi \
+      --set grafana.resources.requests.cpu=50m \
+      --set grafana.resources.requests.memory=64Mi \
+      --set grafana.resources.limits.cpu=100m \
+      --set grafana.resources.limits.memory=128Mi \
+      --wait --timeout 10m
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Create Ingress for Grafana with correct annotations
+  ansible.builtin.shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: prometheus-grafana
+      namespace: monitoring
+      annotations:
+        nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+        nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    spec:
+      ingressClassName: nginx
+      rules:
+      - host: grafana.{{ domain_suffix }}
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: prometheus-grafana
+                port:
+                  number: 80
+    EOF
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Install Policy Reporter (with ignore errors)
+  ansible.builtin.shell: |
+    helm upgrade --install policy-reporter policy-reporter/policy-reporter \
+      --namespace policy-reporter --create-namespace \
+      --version {{ policy_reporter_chart_version }} \
+      --set ui.enabled=true \
+      --set ui.service.type=ClusterIP \
+      --set ui.service.port=80 \
+      --set kyvernoPlugin.enabled=true \
+      --set monitoring.enabled=true \
+      --set "monitoring.serviceMonitor.namespace=monitoring" \
+      --wait --timeout 10m
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Create Ingress for Policy Reporter (if installed)
+  ansible.builtin.shell: |
+    kubectl apply -f - <<EOF
+    apiVersion: networking.k8s.io/v1
+    kind: Ingress
+    metadata:
+      name: policy-reporter-ui
+      namespace: policy-reporter
+      annotations:
+        nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
+        nginx.ingress.kubernetes.io/ssl-passthrough: "false"
+        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    spec:
+      ingressClassName: nginx
+      rules:
+      - host: policy-reporter.{{ domain_suffix }}
+        http:
+          paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: policy-reporter-ui
+                port:
+                  number: 80
+    EOF
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Deploy Kyverno Grafana dashboard
+  ansible.builtin.template:
+    src: kyverno-dashboard-configmap.yaml.j2
+    dest: /tmp/kyverno-dashboard-configmap.yaml
+    mode: '0644'
+
+- name: Apply dashboard configmap
+  ansible.builtin.shell: kubectl apply -f /tmp/kyverno-dashboard-configmap.yaml
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true

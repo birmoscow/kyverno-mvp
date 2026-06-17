@@ -1,0 +1,37 @@
+name: disallow-privileged
+policies:
+  - ../disallow-privileged.yaml
+resources:
+  - name: good-pod
+    resource:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: good-pod
+      spec:
+        containers:
+          - name: nginx
+            image: nginx
+            securityContext:
+              privileged: false
+  - name: bad-pod
+    resource:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: bad-pod
+      spec:
+        containers:
+          - name: nginx
+            image: nginx
+            securityContext:
+              privileged: true
+results:
+  - policy: disallow-privileged
+    rule: deny-privileged
+    resource: good-pod
+    status: pass
+  - policy: disallow-privileged
+    rule: deny-privileged
+    resource: bad-pod
+    status: fail

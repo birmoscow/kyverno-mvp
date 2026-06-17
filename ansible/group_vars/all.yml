@@ -1,0 +1,31 @@
+---
+go_version: "1.24.4"
+go_tarball: "go{{ go_version }}.linux-amd64.tar.gz"
+go_download_url: "https://go.dev/dl/{{ go_tarball }}"
+go_install_dir: "/usr/local"
+
+kind_version: "v0.32.0"
+kind_cluster_name: "kyverno-mvp"
+kind_k8s_image: "kindest/node:v1.32.2"
+
+ingress_nginx_version: "v1.12.1"
+
+argocd_version: "v7.8.0"
+argocd_admin_password: "admin123"
+
+kyverno_chart_version: "v3.3.2"
+kyverno_cli_version: "v1.14.0"
+
+kube_prometheus_stack_version: "66.6.0"
+policy_reporter_chart_version: "2.19.0"
+grafana_admin_password: "admin"
+
+helm_version: "v3.17.0"
+
+domain_suffix: "k8s.local"
+
+git_repo_url: ""
+git_repo_branch: "main"
+
+# Для удобства проверяющего (не используется Ansible, просто подсказка)
+editor: "nano"

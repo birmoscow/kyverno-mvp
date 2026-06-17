@@ -1,0 +1,122 @@
+---
+# Установка python2 (необходим для некоторых модулей)
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Install python2
+  ansible.builtin.apt:
+    name: python2
+    state: present
+
+# Установка Go
+- name: Download Go tarball
+  ansible.builtin.get_url:
+    url: "https://go.dev/dl/go{{ go_version }}.linux-amd64.tar.gz"
+    dest: "/tmp/go{{ go_version }}.linux-amd64.tar.gz"
+    mode: '0644'
+
+- name: Remove old Go
+  ansible.builtin.file:
+    path: /usr/local/go
+    state: absent
+
+- name: Extract Go
+  ansible.builtin.unarchive:
+    src: "/tmp/go{{ go_version }}.linux-amd64.tar.gz"
+    dest: /usr/local
+    remote_src: true
+    creates: /usr/local/go/bin/go
+
+- name: Add Go to PATH (system-wide)
+  ansible.builtin.copy:
+    dest: /etc/profile.d/golang.sh
+    mode: '0644'
+    content: |
+      export PATH=$PATH:/usr/local/go/bin
+      export GOPATH=$HOME/go
+      export PATH=$PATH:$GOPATH/bin
+
+# Установка KinD через go install
+- name: Install KinD via go install
+  ansible.builtin.shell: |
+    export PATH=$PATH:/usr/local/go/bin
+    export GOPATH=/root/go
+    go install sigs.k8s.io/kind@{{ kind_version }}
+  args:
+    creates: /root/go/bin/kind
+  environment:
+    HOME: /root
+
+- name: Symlink kind to /usr/local/bin
+  ansible.builtin.file:
+    src: /root/go/bin/kind
+    dest: /usr/local/bin/kind
+    state: link
+    force: true
+
+# Установка Helm (прямая загрузка бинарника с релизов GitHub)
+- name: Download Helm tarball
+  ansible.builtin.get_url:
+    url: "https://get.helm.sh/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: "/tmp/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    mode: '0644'
+  register: helm_download
+
+- name: Extract Helm tarball
+  ansible.builtin.unarchive:
+    src: "/tmp/helm-{{ helm_version }}-linux-amd64.tar.gz"
+    dest: /tmp/
+    remote_src: true
+    creates: /tmp/linux-amd64/helm
+  when: helm_download.changed or not helm_download.changed
+
+- name: Install Helm binary
+  ansible.builtin.copy:
+    src: /tmp/linux-amd64/helm
+    dest: /usr/local/bin/helm
+    mode: '0755'
+    remote_src: true
+
+# Установка kyverno CLI (опционально, с игнорированием ошибок)
+- name: Download kyverno CLI
+  ansible.builtin.get_url:
+    url: "https://github.com/kyverno/kyverno/releases/download/{{ kyverno_cli_version }}/kyverno-cli_{{ kyverno_cli_version }}_linux_x86_64.tar.gz"
+    dest: "/tmp/kyverno-cli.tar.gz"
+    mode: '0644'
+  register: kyverno_cli_download
+  ignore_errors: true
+  timeout: 30
+
+- name: Extract kyverno CLI (if downloaded)
+  ansible.builtin.unarchive:
+    src: /tmp/kyverno-cli.tar.gz
+    dest: /tmp/
+    remote_src: true
+    creates: /tmp/kyverno
+  when: kyverno_cli_download is succeeded
+
+- name: Install kyverno CLI (if extracted)
+  ansible.builtin.copy:
+    src: /tmp/kyverno
+    dest: /usr/local/bin/kyverno
+    mode: '0755'
+    remote_src: true
+  when: kyverno_cli_download is succeeded
+
+- name: Check if kyverno CLI is available
+  ansible.builtin.command: which kyverno
+  register: kyverno_cli_exists
+  changed_when: false
+  ignore_errors: true
+
+- name: Warn if kyverno CLI not installed
+  ansible.builtin.debug:
+    msg: "⚠️ kyverno CLI is not installed. Policy tests will be skipped. You can still test policies manually via kubectl."
+  when: kyverno_cli_exists.rc != 0
+
+- name: Install nano editor
+  ansible.builtin.apt:
+    name: nano
+    state: present

@@ -1,0 +1,38 @@
+---
+- name: Check if cluster exists
+  ansible.builtin.command: kind get clusters
+  changed_when: false
+  register: existing_clusters
+
+- name: Create cluster config
+  ansible.builtin.template:
+    src: kind-config.yaml.j2
+    dest: /tmp/kind-config.yaml
+    mode: '0644'
+
+- name: Create KinD cluster
+  ansible.builtin.command: kind create cluster --config /tmp/kind-config.yaml
+  when: kind_cluster_name not in existing_clusters.stdout
+  environment:
+    PATH: "/usr/local/go/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+- name: Export kubeconfig for root
+  ansible.builtin.command: kind export kubeconfig --name {{ kind_cluster_name }}
+  changed_when: true
+  environment:
+    PATH: "/usr/local/go/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+- name: Create .kube for ansible_user
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    owner: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Export kubeconfig for ansible_user
+  ansible.builtin.shell: |
+    kind export kubeconfig --name {{ kind_cluster_name }} --kubeconfig /home/{{ ansible_user }}/.kube/config
+    chown {{ ansible_user }}:{{ ansible_user }} /home/{{ ansible_user }}/.kube/config
+  changed_when: true
+  environment:
+    PATH: "/usr/local/go/bin:/root/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

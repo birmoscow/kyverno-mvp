@@ -1,0 +1,25 @@
+name: Test Kyverno Policies
+
+on:
+  push:
+    paths:
+      - 'policies/**'
+  pull_request:
+    paths:
+      - 'policies/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install kyverno CLI
+        run: |
+          curl -LO https://github.com/kyverno/kyverno/releases/download/v1.14.0/kyverno-cli_v1.14.0_linux_x86_64.tar.gz
+          tar -xzf kyverno-cli_v1.14.0_linux_x86_64.tar.gz
+          sudo mv kyverno /usr/local/bin/
+
+      - name: Run kyverno test
+        run: kyverno test policies/ --detailed-results
