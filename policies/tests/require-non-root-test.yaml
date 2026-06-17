@@ -1,0 +1,37 @@
+name: require-non-root
+policies:
+  - ../policies/require-non-root.yaml
+resources:
+  - name: good-pod
+    resource:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: good-pod
+      spec:
+        securityContext:
+          runAsNonRoot: true
+        containers:
+          - name: nginx
+            image: nginx:1.21
+  - name: bad-pod
+    resource:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: bad-pod
+      spec:
+        securityContext:
+          runAsNonRoot: false
+        containers:
+          - name: nginx
+            image: nginx:1.21
+results:
+  - policy: require-non-root
+    rule: non-root
+    resource: good-pod
+    status: pass
+  - policy: require-non-root
+    rule: non-root
+    resource: bad-pod
+    status: fail

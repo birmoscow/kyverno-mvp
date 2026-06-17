@@ -1,0 +1,33 @@
+name: disallow-latest-tag
+policies:
+  - ../policies/disallow-latest-tag.yaml
+resources:
+  - name: good-pod
+    resource:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: good-pod
+      spec:
+        containers:
+          - name: nginx
+            image: nginx:1.21
+  - name: bad-pod
+    resource:
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: bad-pod
+      spec:
+        containers:
+          - name: nginx
+            image: nginx:latest
+results:
+  - policy: disallow-latest-tag
+    rule: validate-image-tag
+    resource: good-pod
+    status: pass
+  - policy: disallow-latest-tag
+    rule: validate-image-tag
+    resource: bad-pod
+    status: fail
