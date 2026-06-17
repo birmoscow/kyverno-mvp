@@ -5,11 +5,11 @@
   gather_facts: true
 
   roles:
-    - prereqs
-    - docker
-    - kubectl
-    - kind
-    - ingress
-    - argocd
-    - kyverno
-    - monitoring
+  - { role: prereqs, tags: ['prereqs'] }
+  - { role: docker, tags: ['docker'] }
+  - { role: kubectl, tags: ['kubectl'] }
+  - { role: kind, tags: ['kind'] }
+  - { role: ingress, tags: ['ingress'] }
+  - { role: argocd, tags: ['argocd'] }
+  - { role: kyverno, tags: ['kyverno'] }
+  - { role: monitoring, tags: ['monitoring'] } 

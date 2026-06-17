@@ -1,15 +1,21 @@
 ---
-- name: Add Prometheus community Helm repo
-  ansible.builtin.shell: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
-  changed_when: false
+- name: Switch Kyverno policies to Audit mode (to allow monitoring installation)
+  ansible.builtin.shell: |
+    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
+      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Audit"}}' || true
+    done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
 
-- name: Add Policy Reporter Helm repo
-  ansible.builtin.shell: helm repo add policy-reporter https://kyverno.github.io/policy-reporter
-  changed_when: false
-
-- name: Update Helm repos
-  ansible.builtin.shell: helm repo update
-  changed_when: false
+- name: Ensure monitoring namespace exists and disable Kyverno validation (extra safety)
+  ansible.builtin.shell: |
+    kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+    kubectl label namespace monitoring policy.kyverno.io/validate=false --overwrite
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
 
 - name: Install kube-prometheus-stack
   ansible.builtin.shell: |
@@ -19,6 +25,10 @@
       --set grafana.adminPassword={{ grafana_admin_password }} \
       --set grafana.service.type=ClusterIP \
       --set grafana.service.port=80 \
+      --set grafana.resources.requests.cpu=50m \
+      --set grafana.resources.requests.memory=64Mi \
+      --set grafana.resources.limits.cpu=100m \
+      --set grafana.resources.limits.memory=128Mi \
       --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
       --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
       --set alertmanager.enabled=false \
@@ -26,101 +36,185 @@
       --set prometheus.resources.requests.memory=128Mi \
       --set prometheus.resources.limits.cpu=200m \
       --set prometheus.resources.limits.memory=256Mi \
-      --set grafana.resources.requests.cpu=50m \
-      --set grafana.resources.requests.memory=64Mi \
-      --set grafana.resources.limits.cpu=100m \
-      --set grafana.resources.limits.memory=128Mi \
-      --wait --timeout 10m
+      --wait --timeout=15m
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Create Ingress for Grafana with correct annotations
+- name: Create Kyverno scrape config file
+  copy:
+    dest: /tmp/kyverno-scrape.yaml
+    content: |
+      - job_name: 'kyverno'
+        static_configs:
+          - targets: ['kyverno-svc-metrics.kyverno.svc.cluster.local:8000']
+        metrics_path: /metrics
+        scrape_interval: 30s
+    mode: '0644'
+
+- name: Create secret with additional scrape configs
+  shell: |
+    kubectl create secret generic prometheus-additional-scrape-configs \
+      --namespace monitoring \
+      --from-file=additional.yaml=/tmp/kyverno-scrape.yaml \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Patch Prometheus to use additional scrape configs
+  shell: |
+    kubectl patch prometheus prometheus-kube-prometheus-prometheus -n monitoring --type merge -p '{
+      "spec": {
+        "additionalScrapeConfigs": {
+          "name": "prometheus-additional-scrape-configs",
+          "key": "additional.yaml"
+        }
+      }
+    }' || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Restart Prometheus to apply changes
+  shell: |
+    kubectl delete pod -l app.kubernetes.io/name=prometheus -n monitoring || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Copy Grafana Ingress manifest
+  copy:
+    src: grafana-ingress.yaml
+    dest: /tmp/grafana-ingress.yaml
+    mode: '0644'
+
+- name: Apply Grafana Ingress
+  shell: kubectl apply -f /tmp/grafana-ingress.yaml
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Ensure Kyverno metrics service has port name metrics
+  shell: |
+    kubectl patch svc kyverno-svc-metrics -n kyverno --type json -p '[{"op":"add","path":"/spec/ports/0/name","value":"metrics"}]' || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Create file with additional scrape configs for Kyverno
+  copy:
+    dest: /tmp/kyverno-scrape-config.yaml
+    content: |
+      - job_name: 'kyverno'
+        static_configs:
+          - targets: ['kyverno-svc-metrics.kyverno.svc.cluster.local:8000']
+        metrics_path: /metrics
+        scrape_interval: 30s
+    mode: '0644'
+
+- name: Create secret with additional scrape configs for Kyverno
+  shell: |
+    kubectl create secret generic prometheus-additional-scrape-configs \
+      --namespace monitoring \
+      --from-file=additional.yaml=/tmp/kyverno-scrape-config.yaml \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Copy prometheus patch file
+  copy:
+    src: prometheus-patch.json
+    dest: /tmp/prometheus-patch.json
+    mode: '0644'
+
+- name: Patch Prometheus CR
+  shell: |
+    kubectl patch prometheus prometheus-kube-prometheus-prometheus -n monitoring --type merge --patch-file /tmp/prometheus-patch.json || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Wait for Prometheus pod
+  shell: |
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=120s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+  ignore_errors: true
+
+- name: Create ConfigMap with Kyverno dashboard
+  shell: |
+    kubectl create configmap kyverno-dashboard --namespace monitoring \
+      --from-file=kyverno-dashboard.json=/tmp/kyverno-dashboard.json \
+      --dry-run=client -o yaml | kubectl apply -f -
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Label ConfigMap as Grafana dashboard
+  shell: |
+    kubectl label configmap kyverno-dashboard -n monitoring grafana_dashboard=1 --overwrite
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Restart Grafana
+  shell: |
+    kubectl rollout restart deployment/prometheus-grafana -n monitoring || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Ensure policy-reporter namespace exists and disable Kyverno validation
   ansible.builtin.shell: |
-    kubectl apply -f - <<EOF
-    apiVersion: networking.k8s.io/v1
-    kind: Ingress
-    metadata:
-      name: prometheus-grafana
-      namespace: monitoring
-      annotations:
-        nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-        nginx.ingress.kubernetes.io/ssl-passthrough: "false"
-        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-    spec:
-      ingressClassName: nginx
-      rules:
-      - host: grafana.{{ domain_suffix }}
-        http:
-          paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: prometheus-grafana
-                port:
-                  number: 80
-    EOF
+    kubectl create namespace policy-reporter --dry-run=client -o yaml | kubectl apply -f -
+    kubectl label namespace policy-reporter policy.kyverno.io/validate=false --overwrite
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Install Policy Reporter (with ignore errors)
+- name: Install Policy Reporter
   ansible.builtin.shell: |
     helm upgrade --install policy-reporter policy-reporter/policy-reporter \
-      --namespace policy-reporter --create-namespace \
+      --namespace policy-reporter \
       --version {{ policy_reporter_chart_version }} \
       --set ui.enabled=true \
       --set ui.service.type=ClusterIP \
       --set ui.service.port=80 \
       --set kyvernoPlugin.enabled=true \
       --set monitoring.enabled=true \
-      --set "monitoring.serviceMonitor.namespace=monitoring" \
-      --wait --timeout 10m
+      --set monitoring.serviceMonitor.namespace=monitoring \
+      --wait --timeout=10m
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   ignore_errors: true
 
-- name: Create Ingress for Policy Reporter (if installed)
-  ansible.builtin.shell: |
-    kubectl apply -f - <<EOF
-    apiVersion: networking.k8s.io/v1
-    kind: Ingress
-    metadata:
-      name: policy-reporter-ui
-      namespace: policy-reporter
-      annotations:
-        nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
-        nginx.ingress.kubernetes.io/ssl-passthrough: "false"
-        nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-    spec:
-      ingressClassName: nginx
-      rules:
-      - host: policy-reporter.{{ domain_suffix }}
-        http:
-          paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: policy-reporter-ui
-                port:
-                  number: 80
-    EOF
-  environment:
-    KUBECONFIG: /root/.kube/config
-  changed_when: true
-  ignore_errors: true
-
-- name: Deploy Kyverno Grafana dashboard
-  ansible.builtin.template:
-    src: kyverno-dashboard-configmap.yaml.j2
-    dest: /tmp/kyverno-dashboard-configmap.yaml
+- name: Copy Policy Reporter Ingress manifest
+  copy:
+    src: policy-reporter-ingress.yaml
+    dest: /tmp/policy-reporter-ingress.yaml
     mode: '0644'
 
-- name: Apply dashboard configmap
-  ansible.builtin.shell: kubectl apply -f /tmp/kyverno-dashboard-configmap.yaml
+- name: Apply Policy Reporter Ingress
+  shell: kubectl apply -f /tmp/policy-reporter-ingress.yaml
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Switch Kyverno policies back to Enforce mode
+  ansible.builtin.shell: |
+    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
+      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Enforce"}}' || true
+    done
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true

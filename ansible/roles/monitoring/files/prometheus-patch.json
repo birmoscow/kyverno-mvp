@@ -1,0 +1,51 @@
+{
+  "spec": {
+    "resources": {
+      "limits": {
+        "cpu": "1",
+        "memory": "2Gi"
+      },
+      "requests": {
+        "cpu": "200m",
+        "memory": "400Mi"
+      }
+    },
+    "podMetadata": {
+      "labels": {
+        "app": "prometheus"
+      }
+    },
+    "containers": [
+      {
+        "name": "prometheus",
+        "securityContext": {
+          "privileged": false,
+          "capabilities": {
+            "drop": ["ALL"],
+            "add": ["NET_BIND_SERVICE"]
+          }
+        }
+      },
+      {
+        "name": "config-reloader",
+        "resources": {
+          "limits": {
+            "cpu": "100m",
+            "memory": "128Mi"
+          },
+          "requests": {
+            "cpu": "10m",
+            "memory": "32Mi"
+          }
+        },
+        "securityContext": {
+          "privileged": false,
+          "capabilities": {
+            "drop": ["ALL"],
+            "add": ["NET_BIND_SERVICE"]
+          }
+        }
+      }
+    ]
+  }
+}

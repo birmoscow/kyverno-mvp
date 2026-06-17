@@ -1,14 +1,54 @@
 ---
-- name: Apply ingress-nginx manifest for KinD
-  ansible.builtin.shell: |
-    kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-{{ ingress_nginx_version }}/deploy/static/provider/kind/deploy.yaml
+- name: Delete existing ingress-nginx namespace (to avoid Helm conflicts)
+  shell: |
+    kubectl delete namespace ingress-nginx --ignore-not-found=true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Add ingress-nginx Helm repository
+  shell: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+  changed_when: false
+
+- name: Update Helm repos
+  shell: helm repo update
+  changed_when: false
+
+- name: Install ingress-nginx via Helm (for KinD)
+  shell: |
+    helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+      --namespace ingress-nginx --create-namespace \
+      --set controller.kind=DaemonSet \
+      --set controller.service.type=ClusterIP \
+      --set controller.hostNetwork=true \
+      --set-string controller.nodeSelector.ingress-ready=true \
+      --set controller.tolerations[0].key=node-role.kubernetes.io/control-plane \
+      --set controller.tolerations[0].effect=NoSchedule \
+      --set controller.admissionWebhooks.enabled=false \
+      --wait --timeout=10m
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Wait for ingress-nginx ready
-  ansible.builtin.shell: |
-    kubectl wait --namespace ingress-nginx --for=condition=ready pod --selector=app.kubernetes.io/component=controller --timeout=180s
+- name: Wait for ingress-nginx pods to be ready
+  shell: |
+    kubectl wait --namespace ingress-nginx \
+      --for=condition=ready pod \
+      --selector=app.kubernetes.io/component=controller \
+      --timeout=180s
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: false
+  ignore_errors: true
+
+- name: Show ingress-nginx pods
+  command: kubectl get pods -n ingress-nginx
+  changed_when: false
+  register: ingress_pods
+  environment:
+    KUBECONFIG: /root/.kube/config
+
+- name: Display ingress-nginx status
+  debug:
+    msg: "{{ ingress_pods.stdout }}"

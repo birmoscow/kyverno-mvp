@@ -1,0 +1,70 @@
+---
+- name: Clean up monitoring stack (Prometheus, Grafana, Policy Reporter)
+  hosts: vm
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Uninstall kube-prometheus-stack (Prometheus + Grafana)
+      ansible.builtin.shell: |
+        helm uninstall prometheus -n monitoring 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Uninstall Policy Reporter
+      ansible.builtin.shell: |
+        helm uninstall policy-reporter -n policy-reporter 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete monitoring namespace
+      ansible.builtin.shell: |
+        kubectl delete namespace monitoring --ignore-not-found=true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete policy-reporter namespace
+      ansible.builtin.shell: |
+        kubectl delete namespace policy-reporter --ignore-not-found=true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete additional scrape configs secret (if exists)
+      ansible.builtin.shell: |
+        kubectl delete secret prometheus-additional-scrape-configs -n monitoring 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete Kyverno dashboard ConfigMap (if exists)
+      ansible.builtin.shell: |
+        kubectl delete configmap kyverno-dashboard -n monitoring 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete old Kyverno policy dashboard ConfigMap (if exists)
+      ansible.builtin.shell: |
+        kubectl delete configmap kyverno-policy-dashboard -n monitoring 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete any leftover Ingress for Grafana
+      ansible.builtin.shell: |
+        kubectl delete ingress prometheus-grafana -n monitoring 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Delete any leftover Ingress for Policy Reporter
+      ansible.builtin.shell: |
+        kubectl delete ingress policy-reporter-ui -n policy-reporter 2>/dev/null || true
+      ignore_errors: true
+      changed_when: true
+
+    - name: Display completion message
+      debug:
+        msg: |
+          ============================================================
+          ✅ Monitoring stack cleanup completed!
+          ============================================================
+          You can now rerun the monitoring role:
+            ansible-playbook -i ansible/inventory.ini ansible/site.yml --tags monitoring
+          ============================================================
