@@ -24,7 +24,7 @@ helm_version: "v3.17.0"
 
 domain_suffix: "k8s.local"
 
-git_repo_url: ""
+git_repo_url: "https://github.com/birmoscow/kyverno-mvp"
 git_repo_branch: "main"
 
 # Для удобства проверяющего (не используется Ansible, просто подсказка)
