@@ -32,22 +32,17 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Install Kyverno (minimal - only admission controller)
-  ansible.builtin.shell: |
+- name: Install Kyverno with reports controller enabled
+  shell: |
     helm upgrade --install kyverno kyverno/kyverno \
-      --namespace kyverno \
-      --create-namespace \
+      --namespace kyverno --create-namespace \
       --version {{ kyverno_chart_version }} \
       --set admissionController.replicas=1 \
-      --set admissionController.resources.requests.cpu=50m \
-      --set admissionController.resources.requests.memory=64Mi \
-      --set admissionController.resources.limits.cpu=500m \
-      --set admissionController.resources.limits.memory=512Mi \
-      --set backgroundController.enabled=false \
-      --set cleanupController.enabled=false \
-      --set reportsController.enabled=false \
-      --set features.policyExceptions.enabled=false \
-      --wait --timeout 30m
+      --set reportsController.enabled=true \
+      --set backgroundController.enabled=true \
+      --set cleanupController.enabled=true \
+      --set features.policyExceptions.enabled=true \
+      --wait --timeout=10m
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true

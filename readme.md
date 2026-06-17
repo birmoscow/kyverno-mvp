@@ -85,6 +85,12 @@ ansible-playbook  ──── SSH ────►     Docker
 
    Фактические домены берите из `roles/monitoring/files/grafana-ingress.yaml`, `roles/monitoring/files/policy-reporter-ingress.yaml` и манифеста Ingress для ArgoCD — впишите их сюда вместо плейсхолдеров.
 
+   Пример отладки
+   
+   ```
+   192.168.1.108   ansible-c argocd.k8s.local grafana.k8s.local policy-reporter.k8s.local
+   ```
+
 ## Развёртывание
 
 С локального ПК:

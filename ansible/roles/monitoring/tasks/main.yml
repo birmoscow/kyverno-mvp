@@ -239,11 +239,26 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Install Policy Reporter
+- name: Switch Kyverno policies to Audit mode before installing Policy Reporter
   ansible.builtin.shell: |
-    helm upgrade --install policy-reporter policy-reporter/policy-reporter \
+    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
+      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Audit"}}' || true
+    done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Copy Policy Reporter chart to VM
+  copy:
+    src: policy-reporter-2.19.0.tgz
+    dest: /tmp/policy-reporter.tgz
+    mode: '0644'
+
+- name: Install Policy Reporter from local chart
+  shell: |
+    helm upgrade --install policy-reporter /tmp/policy-reporter.tgz \
       --namespace policy-reporter \
-      --version {{ policy_reporter_chart_version }} \
       --set ui.enabled=true \
       --set ui.service.type=ClusterIP \
       --set ui.service.port=80 \
@@ -269,6 +284,16 @@
   changed_when: true
   ignore_errors: true
 
+- name: Switch Kyverno policies back to Enforce mode after installing Policy Reporter
+  ansible.builtin.shell: |
+    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
+      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Enforce"}}' || true
+    done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+  
 - name: Ensure jq is installed
   ansible.builtin.package:
     name: jq
