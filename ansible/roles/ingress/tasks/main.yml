@@ -7,17 +7,15 @@
   changed_when: true
   ignore_errors: true
 
-- name: Add ingress-nginx Helm repository
-  shell: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-  changed_when: false
+- name: Copy ingress-nginx chart to VM
+  copy:
+    src: ingress-nginx-4.15.1.tgz   # относительный путь в папке files/ роли
+    dest: /tmp/ingress-nginx.tgz
+    mode: '0644'
 
-- name: Update Helm repos
-  shell: helm repo update
-  changed_when: false
-
-- name: Install ingress-nginx via Helm (for KinD)
+- name: Install ingress-nginx from local chart
   shell: |
-    helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx \
+    helm upgrade --install ingress-nginx /tmp/ingress-nginx.tgz \
       --namespace ingress-nginx --create-namespace \
       --set controller.kind=DaemonSet \
       --set controller.service.type=ClusterIP \
@@ -26,7 +24,7 @@
       --set controller.tolerations[0].key=node-role.kubernetes.io/control-plane \
       --set controller.tolerations[0].effect=NoSchedule \
       --set controller.admissionWebhooks.enabled=false \
-      --wait --timeout=10m
+      --wait --timeout=5m
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
