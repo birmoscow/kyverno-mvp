@@ -1,16 +1,16 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: kyverno-policy-dashboard
+  name: kyverno-dashboard
   namespace: monitoring
   labels:
     grafana_dashboard: "1"
 data:
-  kyverno-policy-dashboard.json: |
+  kyverno-dashboard.json: |
 {% raw %}
     {
-      "title": "Kyverno Policy Dashboard",
-      "uid": "kyverno-policies",
+      "title": "Kyverno",
+      "uid": "kyverno",
       "schemaVersion": 38,
       "refresh": "30s",
       "panels": [
@@ -83,6 +83,8 @@ data:
             "query": "label_values(policy_report_result, namespace)"
           }
         ]
-      }
+      },
+      "time": "now-6h",
+      "timezone": "browser"
     }
 {% endraw %}

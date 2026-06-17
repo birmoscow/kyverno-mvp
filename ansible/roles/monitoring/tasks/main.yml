@@ -1,13 +1,45 @@
 ---
-- name: Switch Kyverno policies to Audit mode (to allow monitoring installation)
+- name: Backup restrictive Kyverno ClusterPolicies before temporarily removing them
   ansible.builtin.shell: |
-    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
-      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Audit"}}' || true
+    mkdir -p /tmp/kyverno-backup
+    for policy in disallow-host-path disallow-latest-tag disallow-nodeport disallow-privileged require-resource-limits restrict-capabilities require-labels require-non-root; do
+      if kubectl get clusterpolicy "$policy" &>/dev/null; then
+        kubectl get clusterpolicy "$policy" -o json \
+          | jq 'del(.metadata.resourceVersion, .metadata.uid, .metadata.creationTimestamp, .metadata.generation, .metadata.selfLink, .metadata.managedFields, .status)' \
+          > "/tmp/kyverno-backup/${policy}.json"
+      fi
     done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
+
+- name: Pause ArgoCD sync for kyverno-policies to prevent auto-restore
+  ansible.builtin.shell: |
+    kubectl patch application kyverno-policies -n argocd --type merge -p '{"spec":{"syncPolicy":{"automated":null}}}' || true
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   ignore_errors: true
+
+- name: Temporarily remove restrictive Kyverno policies
+  ansible.builtin.shell: |
+    for policy in disallow-host-path disallow-latest-tag disallow-nodeport disallow-privileged require-resource-limits restrict-capabilities require-labels require-non-root; do
+      kubectl delete clusterpolicy "$policy" --ignore-not-found
+    done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Wait for policies to be deleted
+  ansible.builtin.shell: |
+    kubectl get clusterpolicy --no-headers -o name | grep -E 'disallow-|require-|restrict-' || true
+  register: remaining_policies
+  until: remaining_policies.stdout == ""
+  retries: 15
+  delay: 5
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
 
 - name: Ensure monitoring namespace exists and disable Kyverno validation (extra safety)
   ansible.builtin.shell: |
@@ -17,11 +49,32 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Install kube-prometheus-stack
+- name: Add required Helm repositories
   ansible.builtin.shell: |
-    helm upgrade --install prometheus prometheus-community/kube-prometheus-stack \
-      --namespace monitoring --create-namespace \
+    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+    helm repo add policy-reporter https://kyverno.github.io/policy-reporter || true
+    helm repo update
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+
+- name: Pre-pull kube-prometheus-stack chart locally
+  ansible.builtin.shell: |
+    helm pull prometheus-community/kube-prometheus-stack \
       --version {{ kube_prometheus_stack_version }} \
+      --destination /tmp
+  environment:
+    KUBECONFIG: /root/.kube/config
+  register: helm_pull_result
+  retries: 3
+  delay: 30
+  until: helm_pull_result.rc == 0
+  changed_when: true
+
+- name: Install kube-prometheus-stack from local chart
+  ansible.builtin.shell: |
+    helm upgrade --install prometheus /tmp/kube-prometheus-stack-{{ kube_prometheus_stack_version }}.tgz \
+      --namespace monitoring --create-namespace \
       --set grafana.adminPassword={{ grafana_admin_password }} \
       --set grafana.service.type=ClusterIP \
       --set grafana.service.port=80 \
@@ -148,6 +201,12 @@
   changed_when: false
   ignore_errors: true
 
+- name: Copy Kyverno dashboard JSON to VM
+  copy:
+    src: kyverno-dashboard.json
+    dest: /tmp/kyverno-dashboard.json
+    mode: '0644'
+
 - name: Create ConfigMap with Kyverno dashboard
   shell: |
     kubectl create configmap kyverno-dashboard --namespace monitoring \
@@ -164,7 +223,7 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Restart Grafana
+- name: Restart Grafana to pick up new dashboard
   shell: |
     kubectl rollout restart deployment/prometheus-grafana -n monitoring || true
   environment:
@@ -210,12 +269,40 @@
   changed_when: true
   ignore_errors: true
 
-- name: Switch Kyverno policies back to Enforce mode
+- name: Ensure jq is installed
+  ansible.builtin.package:
+    name: jq
+    state: present
+
+- name: Restore previously removed Kyverno policies
   ansible.builtin.shell: |
-    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
-      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Enforce"}}' || true
+    for f in /tmp/kyverno-backup/*.json; do
+      if [ -f "$f" ] && [ -s "$f" ]; then
+        kubectl apply -f "$f"
+      fi
     done
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
   ignore_errors: true
+
+- name: Resume ArgoCD sync for kyverno-policies
+  ansible.builtin.shell: |
+    kubectl patch application kyverno-policies -n argocd --type merge -p '{"spec":{"syncPolicy":{"automated":{"prune":true,"selfHeal":true}}}}' || true
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
+- name: Display final access information
+  ansible.builtin.debug:
+    msg: |
+      ============================================================
+      ✅ Monitoring stack deployed successfully!
+      ============================================================
+      Grafana:           http://grafana.{{ domain_suffix }}
+      Login: admin / {{ grafana_admin_password }}
+      Dashboard: Kyverno – already imported
+
+      Policy Reporter:   http://policy-reporter.{{ domain_suffix }} (if installed)
+      ============================================================

@@ -120,3 +120,8 @@
   ansible.builtin.apt:
     name: nano
     state: present
+
+- name: Install jq 
+  ansible.builtin.apt:
+    name: jq
+    state: present
