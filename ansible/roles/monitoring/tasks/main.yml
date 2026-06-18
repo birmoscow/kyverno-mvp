@@ -1,4 +1,14 @@
 ---
+- name: Switch Kyverno policies to Audit mode (to allow monitoring installation)
+  ansible.builtin.shell: |
+    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
+      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Audit"}}' || true
+    done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
+
 - name: Backup restrictive Kyverno ClusterPolicies before temporarily removing them
   ansible.builtin.shell: |
     mkdir -p /tmp/kyverno-backup
@@ -58,22 +68,15 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Pre-pull kube-prometheus-stack chart locally
-  ansible.builtin.shell: |
-    helm pull prometheus-community/kube-prometheus-stack \
-      --version {{ kube_prometheus_stack_version }} \
-      --destination /tmp
-  environment:
-    KUBECONFIG: /root/.kube/config
-  register: helm_pull_result
-  retries: 3
-  delay: 30
-  until: helm_pull_result.rc == 0
-  changed_when: true
+- name: Copy kube-prometheus-stack chart to VM
+  copy:
+    src: kube-prometheus-stack-{{ kube_prometheus_stack_version }}.tgz
+    dest: /tmp/kube-prometheus-stack.tgz
+    mode: '0644'
 
 - name: Install kube-prometheus-stack from local chart
-  ansible.builtin.shell: |
-    helm upgrade --install prometheus /tmp/kube-prometheus-stack-{{ kube_prometheus_stack_version }}.tgz \
+  shell: |
+    helm upgrade --install prometheus /tmp/kube-prometheus-stack.tgz \
       --namespace monitoring --create-namespace \
       --set grafana.adminPassword={{ grafana_admin_password }} \
       --set grafana.service.type=ClusterIP \
@@ -239,16 +242,6 @@
     KUBECONFIG: /root/.kube/config
   changed_when: true
 
-- name: Switch Kyverno policies to Audit mode before installing Policy Reporter
-  ansible.builtin.shell: |
-    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
-      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Audit"}}' || true
-    done
-  environment:
-    KUBECONFIG: /root/.kube/config
-  changed_when: true
-  ignore_errors: true
-
 - name: Copy Policy Reporter chart to VM
   copy:
     src: policy-reporter-2.19.0.tgz
@@ -284,16 +277,6 @@
   changed_when: true
   ignore_errors: true
 
-- name: Switch Kyverno policies back to Enforce mode after installing Policy Reporter
-  ansible.builtin.shell: |
-    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
-      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Enforce"}}' || true
-    done
-  environment:
-    KUBECONFIG: /root/.kube/config
-  changed_when: true
-  ignore_errors: true
-  
 - name: Ensure jq is installed
   ansible.builtin.package:
     name: jq
@@ -331,3 +314,13 @@
 
       Policy Reporter:   http://policy-reporter.{{ domain_suffix }} (if installed)
       ============================================================
+
+- name: Switch Kyverno policies back to Enforce mode
+  ansible.builtin.shell: |
+    for policy in $(kubectl get clusterpolicy -o name | cut -d/ -f2); do
+      kubectl patch clusterpolicy $policy --type merge -p '{"spec":{"validationFailureAction":"Enforce"}}' || true
+    done
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: true
+  ignore_errors: true
