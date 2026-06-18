@@ -108,7 +108,7 @@
         scrape_interval: 30s
     mode: '0644'
 
-- name: Create secret with additional scrape configs
+- name: Create secret with additional scrape configs for Kyverno
   shell: |
     kubectl create secret generic prometheus-additional-scrape-configs \
       --namespace monitoring \
@@ -139,6 +139,14 @@
   environment:
     KUBECONFIG: /root/.kube/config
   changed_when: true
+  ignore_errors: true
+
+- name: Wait for Prometheus pod to be ready
+  shell: |
+    kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=prometheus -n monitoring --timeout=120s
+  environment:
+    KUBECONFIG: /root/.kube/config
+  changed_when: false
   ignore_errors: true
 
 - name: Copy Grafana Ingress manifest
